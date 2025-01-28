@@ -16,6 +16,8 @@ class RSM:
     LOGIN = os.environ["RSM_LOGIN"]
     PASS = os.environ["RSM_PASS"]
     PING_LINK = os.environ["RSM_PING_LINK"]
+    COUNTER_LAYOUT = 21703
+
 
     # Группы льгот
     AFFAIR_GRLGOT_DICT = {
