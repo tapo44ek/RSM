@@ -1,3 +1,4 @@
+import urllib
 import psycopg2
 import requests
 import json
@@ -14,12 +15,9 @@ import uuid
 import random
 import string
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, urljoin
-from dateutil.relativedelta import relativedelta
 import multiprocessing
-from urllib.parse import urlencode, urljoin, quote
+from urllib.parse import urlencode, urljoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import numpy as np
 
 
 def generate_key():
@@ -190,7 +188,14 @@ def check_token():
         return None
 
 
-##################################
+def send_request(url, cookie):
+    try:
+        requests.get(url, cookies={'Rsm.Cookie': cookie})
+    except requests.exceptions.RequestException as e:
+        print(e)
+        pass
+
+
 def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, registered=None):
     """
     search a row count in requested data
@@ -218,9 +223,17 @@ def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, r
         search_link, count_link = search_kpu(session_key, layout_id,
                                              kpu_direction=category, reason2_date_resolution=dates,
                                              registered=registered)
+    elif dates_type == 4:
+        search_link, count_link = search_kurs_living_space(dates, layout_id, session_key)
 
-    a = requests.get(search_link,
-                     cookies={'Rsm.Cookie': cookie})
+    # a = requests.get(search_link,
+    #                  cookies={'Rsm.Cookie': cookie})
+
+    p = multiprocessing.Process(target=send_request, args=(search_link, cookie,))
+    p.daemon = True  # Позволяет процессу завершаться вместе с родителем
+    p.start()
+    time.sleep(0.75)
+    print("____40__")
     c = requests.get(count_link,
                      cookies={'Rsm.Cookie': cookie})
     count = int(c.text)
@@ -282,6 +295,55 @@ def split_interval(dates, dates_type, category, cookie, max_rows=1500, registere
     return result_intervals
 
 
+def split_interval_ids(interval, interval_type, cookie, max_rows=1500, registered=None, category=None):
+    """
+    Разбивает числовой интервал на поддиапазоны, чтобы в одном запросе не запрашивалось более max_rows строк.
+    :param interval: Список [start, end] с целочисленными границами.
+    :param interval_type: Тип интервала.
+    :param category: Категория.
+    :param cookie: Куки.
+    :param max_rows: Максимальное количество строк в одном запросе.
+    :param registered: Дополнительный параметр.
+    :return: Список кортежей (start, end, row_count).
+    """
+    result_intervals = []
+
+    # Получаем session_key для текущего процесса
+    session_key = generate_key()
+
+    # Определяем количество строк для данного интервала
+    row_count = get_row_count(interval, interval_type, category, session_key, 21744, cookie, registered)
+    print(row_count)
+
+    if row_count <= max_rows:
+        result_intervals.append((interval[0], interval[1], row_count))
+    else:
+        # Определяем количество частей, на которые нужно разделить интервал
+        num_parts = (row_count // max_rows) + 1
+        interval_size = (interval[1] - interval[0] + 1) // num_parts
+
+        with ProcessPoolExecutor(max_workers=50) as executor:
+            future_intervals = []
+
+            for i in range(num_parts):
+                part_start = interval[0] + i * interval_size
+                part_end = interval[0] + (i + 1) * interval_size - 1
+
+                # Убедимся, что последний интервал заканчивается ровно на границе
+                if i == num_parts - 1 or part_end >= interval[1]:
+                    part_end = interval[1]
+                print(f'интервал {part_start} - {part_end}')
+
+                future = executor.submit(split_interval_ids, [part_start, part_end], interval_type, cookie, max_rows,
+                                         registered, category)
+                future_intervals.append(future)
+
+            for future in as_completed(future_intervals):
+                result_intervals.extend(future.result())
+
+    return result_intervals
+
+
 def merge_intervals(intervals, dates_type, cookie, category, layout, max_rows=1500, registered=None):
     """
     makes intervals more comfortable for multiprocessing search
@@ -325,6 +387,44 @@ def merge_intervals(intervals, dates_type, cookie, category, layout, max_rows=15
     return merged_intervals
 
 
+def merge_intervals_ids(intervals, interval_type, cookie, layout, max_rows=1500, registered=None):
+    """
+    Объединяет интервалы для более эффективного многопоточного поиска.
+    :param intervals: Список кортежей (start, end, row_count).
+    :param interval_type: Тип интервала.
+    :param cookie: Куки.
+    :param category: Категория.
+    :param layout: Макет.
+    :param max_rows: Максимальное количество строк в одном запросе.
+    :param registered: Дополнительный параметр.
+    :return: Список объединённых интервалов.
+    """
+    intervals.sort(key=lambda x: x[0])
+    merged_intervals = []
+    current_start = None
+    current_end = None
+    current_sum = 0
+
+    for start, end, row_count in intervals:
+        if current_sum + row_count <= max_rows:
+            if current_start is None:
+                current_start = start
+            current_end = end
+            current_sum += row_count
+        else:
+            merged_intervals.append((current_start, current_end, interval_type, current_sum,
+                                     None, generate_key(), cookie, layout, registered))
+            current_start = start
+            current_end = end
+            current_sum = row_count
+
+    if current_start is not None:
+        merged_intervals.append((current_start, current_end, interval_type, current_sum,
+                                 None, generate_key(), cookie, layout, registered))
+
+    return merged_intervals
+
+
 def get_rsm(date_start, date_end, dates_type, category, session_key, cookie, layout_id, registered):
     """
     takes an info from RSM
@@ -352,10 +452,11 @@ def get_rsm(date_start, date_end, dates_type, category, session_key, cookie, lay
         search_link, count_link = search_kpu(session_key, layout_id,
                                              kpu_direction=category, reason2_date_resolution=dates,
                                              registered=registered)
+    elif dates_type == 4:
+        search_link, count_link = search_kurs_living_space(dates, layout_id, session_key)
 
     a = requests.get(search_link,
                      cookies={'Rsm.Cookie': cookie})
-    # print(a.status_code)
     if a.status_code != 503:
         jsonn = json.loads(a.text)
         if jsonn['Data'] != 'The service is unavailable.':
@@ -373,7 +474,6 @@ def get_rsm(date_start, date_end, dates_type, category, session_key, cookie, lay
                 if df1.empty:
                     i = 50
                 i = i + 1
-            # print(date_start, '-', date_end, '\n', len(df))
     return df
 
 
@@ -388,15 +488,11 @@ def new_kpu(intervals):
         args = [(interval[0], interval[1], interval[2], interval[4], interval[5], interval[6], interval[7], interval[8])
                 for interval in intervals]
         results = pool.starmap(get_rsm, args)
-    print('------------------')
     # Объединение всех датафреймов в один
     combined_df = pd.concat(results, ignore_index=True)
-    print(len(combined_df))
-    # print(combined_df.columns)
     combined_df.drop(columns='Selected', inplace=True)
     combined_df.drop_duplicates(inplace=True)
 
-    # combined_df.to_excel('/Users/viktor/Downloads/export_rsm_json_all.xlsx', index=False)
     return combined_df
 
 
@@ -486,10 +582,6 @@ def search_kpu(
         formatted_search_data[f"searchData[{index}].key"] = item["key"]
         formatted_search_data[f"searchData[{index}].value"] = str(item["value"]).lower()
 
-    # print(formatted_search_data)
-    # print(search_data)
-    # print(search_dynamic_control_data)
-
     get_count_params = {
             "RegisterId": "KursKpu",  # Идентификатор реестра
             "SearchApplied": "true",  # Поиск активен (true)
@@ -530,14 +622,6 @@ def search_kpu(
         "ListRegisterId": "0"
     }
 
-   # ,)  # Идентификатор списка реестра
-   #      "searchData[0].key": "KpuDirection",  # Ключ первого фильтра
-   #      "searchData[0].value": "1",  # Значение первого фильтра
-   #      "searchData[1].key": "InList",  # Ключ второго фильтра
-   #      "searchData[1].value": "true",  # Значение второго фильтра
-   #      "SearchDynamicControlData": '[{"IdControl":"STAND_YEAR","From":"1998","To":"2005","ControlType":"DynamicNumber","IdAttribute":"43603100","QueryOperation":"Interval"},{"IdControl":"DECL_DATE","ControlType":"DynamicDate","IdAttribute":"43608400","From":"1998-01-01T00:00:00","To":"2005-01-01T23:59:59"}]',
-   #      # JSON в строковом виде
-
     get_data_params_2 = {
         "SearchDynamicControlData": search_dynamic_control_data,
         "UniqueSessionKey": session_key,  # Уникальный ключ сессии
@@ -547,12 +631,6 @@ def search_kpu(
 
     get_data_params_1.update(formatted_search_data)
     get_data_params_1.update(get_data_params_2)
-
-    # for key, value in get_data_params_1.items():
-    #     print(f'"{key}": "{value}"')
-    #
-    # for key, value in get_count_params.items():
-    #     print(f'"{key}": "{value}"')
 
     url_data = "http://webrsm.mlc.gov:5222/Registers/GetData"
     url_count = "http://webrsm.mlc.gov:5222/Registers/GetCount"
@@ -566,14 +644,139 @@ def search_kpu(
     # Сборка полного URL
     full_url = urljoin(url_data, f"?{query_string}")
     full_url_count = urljoin(url_count, f"?{query_string_count}")
-    # token = check_token()
-    # Вывод результата
-    # response = requests.get(full_url, cookies={'Rsm.Cookie': token})
-    # print(response.json())
-    # response = requests.get(full_url_count, cookies={'Rsm.Cookie': token})
-    # print(response.json())
 
     return full_url, full_url_count
+
+
+def search_kurs_living_space(apart_id_interval, layout_id: int, session_key: str):
+    '''
+    small function for making links only for apart_id intervals in KursLivigSpace
+    with Распорядитель_П8=11,12,30,81 and Незаселена
+    in the next versions will be refactored in the same way with the search_kpu function... may be))
+    layout_id required
+    :param apart_id_interval:
+    :param layout_id: int
+    :param session_key: str
+    :return:
+    '''
+
+    base_url_search = "http://webrsm.mlc.gov:5222/Registers/GetData"
+    base_url_count = "http://webrsm.mlc.gov:5222/Registers/GetCount"
+
+    # params for GetData query
+    params_search = {
+        "sort": "",
+        "page": 1,
+        "pageSize": 30,
+        "group": "",
+        "filter": "",
+        "RegisterId": "KursLivingSpace",
+        "SearchApplied": "true",
+        "PageChanged": "false",
+        "SelectAll": "false",
+        "ClearSelection": "true",
+        "LayoutId": f"{layout_id}",
+        "RegisterViewId": "KursLivingSpace",
+        "LayoutRegisterId": "0",
+        "FilterRegisterId": "0",
+        "ListRegisterId": "0",
+        "SearchDataNewDesign": urllib.parse.quote(json.dumps([
+            {
+                "typeControl": "value",
+                "type": "BOOLEAN",
+                "text": "Распорядитель_П8=11,12,30,81",
+                "textValue": "Да",
+                "value": 1,
+                "id": 43726400,
+                "allowDelete": True  # Булево значение
+            },
+            {
+                "typeControl": "value",
+                "type": "BOOLEAN",
+                "text": "Незаселена",
+                "textValue": "Да",
+                "value": 1,
+                "id": 43726700,
+                "allowDelete": True  # Булево значение
+            },
+            {
+                "typeControl": "range",
+                "text": "Сл.инф_APART_ID",
+                "textValue": f"c {apart_id_interval[0]} до {apart_id_interval[1]}",
+                "type": "INTEGER",
+                "from": str(apart_id_interval[0]),
+                "to": str(apart_id_interval[1]),
+                "id": 43705100
+            }
+        ], ensure_ascii=False, separators=(',', ':')), safe=''),
+        "UniqueSessionKey": f"{session_key}",
+        "UniqueSessionKeySetManually": "true",
+        "ContentLoadCounter": "1"
+    }
+
+    # params for GetCount query
+    get_count_params = {
+        "RegisterId": "KursLivingSpace",
+        "SearchApplied": "true",
+        "PageChanged": "false",
+        "Page": 1,
+        "PageSize": 30,
+        "SelectAll": "false",
+        "ClearSelection": "false",
+        "LayoutId": f"{layout_id}",
+        "RegisterViewId": "KursLivingSpace",
+        "LayoutRegisterId": "0",
+        "FilterRegisterId": "0",
+        "ListRegisterId": "0",
+        "SearchDataNewDesign": json.dumps([
+            {
+                "typeControl": "value",
+                "type": "BOOLEAN",
+                "text": "Распорядитель_П8=11,12,30,81",
+                "textValue": "Да",
+                "value": 1,
+                "id": 43726400,
+                "allowDelete": "true"
+            },
+            {
+                "typeControl": "value",
+                "type": "BOOLEAN",
+                "text": "Незаселена",
+                "textValue": "Да",
+                "value": 1,
+                "id": 43726700,
+                "allowDelete": "true"
+            },
+            {
+                "typeControl": "range",
+                "text": "Сл.инф_APART_ID",
+                "textValue": f"c {apart_id_interval[0]} до {apart_id_interval[1]}",
+                "type": "INTEGER",
+                "from": f"{apart_id_interval[0]}",
+                "to": f"{apart_id_interval[1]}",
+                "id": 43705100,
+                "allowDelete": "true"
+            }
+        ], ensure_ascii=False, separators=(',', ':')),
+        "databaseFilters": [],
+        "selectedLists": [],
+        "UniqueSessionKey": f"{session_key}",
+        "UniqueSessionKeySetManually": "true",
+        "ContentLoadCounter": 1,
+        "CurrentLayoutId": f"{layout_id}"
+    }
+
+    get_count_params_json = json.dumps(get_count_params, ensure_ascii=False)
+
+    query_string_search = urlencode(params_search, safe=':/')
+    query_string_count = urlencode({"parametersJson": get_count_params_json,
+                                    "registerId": "KursKpu",
+                                    "uniqueSessionKey": session_key})
+
+    full_url_search = urljoin(base_url_search, f"?{query_string_search}")
+    full_url_count = urljoin(base_url_count, f"?{query_string_count}")
+
+    return full_url_search, full_url_count
 
 
 def get_kpu(
@@ -606,13 +809,40 @@ def get_kpu(
     return new_kpu(merged_intervals)
 
 
+def get_kurs_living_space(ids, layout_id):
+    """
+    gets dataframe from RSM with apartment resource by interval of APART_ID
+    :param ids:
+    :param layout_id:
+    :return:
+    """
+    token = check_token()
+    result = split_interval_ids(ids, 4, token)
+    intervals = merge_intervals_ids(result, 4, token, layout_id)
+    df = new_kpu(intervals)
+
+    return df
+
+
+
 if __name__ == '__main__':
+    start = datetime.now()
+    # token = check_token()
+    # result = split_interval_ids([999, 99999999], 4, token)
+    # print(merge_intervals_ids(result, 4, token, 21744))
 
-    category = [70]
-    layout_id = 22024 # usually use 21705
-    start_date = datetime(2017, 1, 1, 0, 0, 0)
-    end_date = datetime(2024, 12, 31, 23, 59, 59)
+    df = get_kurs_living_space([999, 99999999], 21744)
+    df.to_excel("/Users/viktor/Downloads/resurs_test.xlsx")
+    print(datetime.now() - start)
 
-    df = get_kpu(start_date, end_date, 1, category, layout_id)
-    df.to_excel('/Users/viktor/Downloads/export_districts.xlsx')
+    # print(split_interval_ids([999, 99999999], 4, check_token()))
+    # print(search_kurs_living_space([999, 99999999], 21744, generate_key()))
+    # print(check_token())
+    # category = [70]
+    # layout_id = 22024 # usually use 21705
+    # start_date = datetime(2017, 1, 1, 0, 0, 0)
+    # end_date = datetime(2024, 12, 31, 23, 59, 59)
+    #
+    # df = get_kpu(start_date, end_date, 1, category, layout_id)
+    # df.to_excel('/Users/viktor/Downloads/export_districts.xlsx')
     # search_kpu(generate_key(), 21703, registered=True, kpu_direction=[1], decl_date=['01.01.2020', '31.12.2020'])
