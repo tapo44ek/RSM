@@ -801,8 +801,6 @@ def get_kpu(
     """
 
     token = check_token()
-    key = generate_key()
-
     result = split_interval([start_date, end_date], date_type, category, token, registered=registered)
     merged_intervals = merge_intervals(result, date_type, token, category, layout_id, registered=registered)
 
@@ -816,13 +814,13 @@ def get_kurs_living_space(ids, layout_id):
     :param layout_id:
     :return:
     """
+
     token = check_token()
     result = split_interval_ids(ids, 4, token)
     intervals = merge_intervals_ids(result, 4, token, layout_id)
     df = new_kpu(intervals)
 
     return df
-
 
 
 if __name__ == '__main__':
