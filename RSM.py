@@ -112,10 +112,10 @@ def process_date_wotime_range(dates):
         date_objects.sort()
 
         # Меньшая дата
-        date_start = date_objects[0].strftime("%Y-%m-%d")
+        date_start = date_objects[0].strftime("%d.%m.%Y %H:%M:%S")
 
         # Большая дата с временем 23:59:59
-        date_end = date_objects[1].strftime("%Y-%m-%d")
+        date_end = date_objects[1].strftime("%d.%m.%Y %H:%M:%S")
 
         return date_start, date_end
     except ValueError as e:
@@ -272,6 +272,7 @@ def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, r
     elif dates_type == 4:
         search_link, count_link = search_kurs_living_space(dates, layout_id, session_key)
     elif dates_type == 5:
+        date_start, date_end = process_date_range(dates)
         search_link, count_link = search_vypiski(dates, layout_id, session_key)
 
     # a = requests.get(search_link,
@@ -284,8 +285,9 @@ def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, r
     print("____40__")
     c = requests.get(count_link,
                      cookies={'Rsm.Cookie': cookie})
+    print(c.text)
     count = int(c.text)
-    print(count)
+    # print(c.text)
     return count
 
 
@@ -343,7 +345,7 @@ def split_interval(dates, dates_type, category, cookie, max_rows=1500, registere
     return result_intervals
 
 
-def split_interval_vypiski(dates, dates_type, category, cookie, max_rows=1500, registered=None):
+def split_interval_vypiski(dates, dates_type, category, cookie, max_rows=1000, registered=None):
     """
     makes an intervals of dates for searching only less then 1500 rows of result at one request
     :param dates:
@@ -372,7 +374,7 @@ def split_interval_vypiski(dates, dates_type, category, cookie, max_rows=1500, r
         interval_duration = (dates[1] - dates[0]) / num_parts
 
         # Используем ProcessPoolExecutor для многопроцессорности
-        with ProcessPoolExecutor(max_workers=50) as executor:
+        with ProcessPoolExecutor(max_workers=40) as executor:
             future_intervals = []
 
             # Делим интервал на `num_parts` частей и отправляем каждую часть в параллельный процесс
@@ -485,7 +487,7 @@ def merge_intervals(intervals, dates_type, cookie, category, layout, max_rows=15
     if current_start is not None:
         merged_intervals.append((current_start, current_end, dates_type, current_sum,
                                  category, generate_key(), cookie, layout, registered))
-
+    print(merged_intervals)
     return merged_intervals
 
 
@@ -897,6 +899,7 @@ def search_vypiski(creation_dates, layout_id: int, session_key: str):
     :return:
     '''
     date_start, date_end = process_date_wotime_range(creation_dates)
+    print(date_start, " - ", date_end)
     base_url_search = "http://webrsm.mlc.gov:5222/Registers/GetData"
     base_url_count = "http://webrsm.mlc.gov:5222/Registers/GetCount"
 
@@ -921,10 +924,10 @@ def search_vypiski(creation_dates, layout_id: int, session_key: str):
             {
                 "typeControl": "range",  # Диапазонное значение (от и до)
                 "text": "Дата создания проекта выписки",  # Название фильтра
-                "textValue": f"c {date_start} 00:00:00 до {date_end} 23:59:59",  # Условие фильтрации
+                "textValue": f"c {date_start} до {date_end}",  # Условие фильтрации
                 "type": "DATE",  # Тип данных – дата
-                "from": f"{date_start} 00:00:00",  # Начальная дата диапазона
-                "to": f"{date_end} 23:59:59",  # Конечная дата диапазона
+                "from": f"{date_start}",  # Начальная дата диапазона
+                "to": f"{date_end}",  # Конечная дата диапазона
                 "id": 43821000,  # Идентификатор атрибута
                 "allowDelete": True  # Возможность удаления данного фильтра
             }
@@ -952,12 +955,11 @@ def search_vypiski(creation_dates, layout_id: int, session_key: str):
             {
                 "typeControl": "range",  # Диапазонное значение (от и до)
                 "text": "Дата создания проекта выписки",  # Название фильтра
-                "textValue": f"c {date_start} 00:00:00 до {date_end} 23:59:59",  # Условие фильтрации
+                "textValue": f"c {date_start} до {date_end}",  # Условие фильтрации
                 "type": "DATE",  # Тип данных – дата
-                "from": f"{date_start} 00:00:00",  # Начальная дата диапазона
-                "to": f"{date_end} 23:59:59",  # Конечная дата диапазона
-                "id": 43821000,  # Идентификатор атрибута
-                "allowDelete": "true"
+                "from": f"{date_start}",  # Начальная дата диапазона
+                "to": f"{date_end}",  # Конечная дата диапазона
+                "id": 43821000  # Идентификатор атрибута
             }
         ], ensure_ascii=False, separators=(',', ':')),
         "databaseFilters": [],
@@ -1054,12 +1056,13 @@ if __name__ == '__main__':
     # print(split_interval_ids([999, 99999999], 4, check_token()))
     # print(search_kurs_living_space([999, 99999999], 21744, generate_key()))
     # print(check_token())
-    # category = [70, 91]
-    # layout_id = 22223 # usually use 21705
+    category = [70, 91]
+    layout_id = 22262 # usually use 21705
     start_date = datetime(2017, 1, 1, 0, 0, 0)
-    end_date = datetime(2025, 3, 11, 23, 59, 59)
+    end_date = datetime.now() - timedelta(minutes=5)
     # df = get_kpu(start_date, end_date, 1, category, layout_id)
     # search_kpu(generate_key(), 21703, registered=True, kpu_direction=[1], decl_date=['01.01.2020', '31.12.2020'])
 
     df = get_vypiski([start_date, end_date], 22262)
+    print(len(df))
     # df.to_excel('vypiski_test.xlsx')
