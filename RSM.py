@@ -79,6 +79,49 @@ def process_date_range(dates):
         return f"ERROR: {e}", f"ERROR: {e}"
 
 
+def process_date_wotime_range(dates):
+    """
+    Converter to the RSM request format
+    :param dates:
+    :return:
+    """
+    try:
+        # Преобразуем даты в формат datetime
+        date_objects = []
+
+        for date_str in dates:
+            if isinstance(date_str, str):
+
+                if '.' in date_str:  # Формат dd.mm.yyyy
+                    date_obj = datetime.strptime(date_str, "%d.%m.%Y")
+                elif '-' in date_str:  # Формат yyyy-mm-dd
+                    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                else:
+                    raise ValueError(f"Неподдерживаемый формат даты: {date_str}")
+                date_objects.append(date_obj)
+
+            else:
+                date_objects.append(date_str)
+
+
+        # Убедимся, что список содержит ровно 2 даты
+        if len(date_objects) != 2:
+            raise ValueError("Ожидался список ровно из двух дат")
+
+        # Сортируем даты (меньшая -> первая, большая -> вторая)
+        date_objects.sort()
+
+        # Меньшая дата
+        date_start = date_objects[0].strftime("%Y-%m-%d")
+
+        # Большая дата с временем 23:59:59
+        date_end = date_objects[1].strftime("%Y-%m-%d")
+
+        return date_start, date_end
+    except ValueError as e:
+        return f"ERROR: {e}", f"ERROR: {e}"
+
+
 def get_cookie():
     """
     Request for the new auth token
@@ -95,6 +138,9 @@ def get_cookie():
     chrome_options.add_experimental_option('prefs', prefs)
     chrome_options.add_argument("--allow-running-insecure-content")
     chrome_options.add_argument("--disable_web_security")
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--headless') 
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     # driver = webdriver.Chrome()
@@ -225,6 +271,8 @@ def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, r
                                              registered=registered)
     elif dates_type == 4:
         search_link, count_link = search_kurs_living_space(dates, layout_id, session_key)
+    elif dates_type == 5:
+        search_link, count_link = search_vypiski(dates, layout_id, session_key)
 
     # a = requests.get(search_link,
     #                  cookies={'Rsm.Cookie': cookie})
@@ -232,7 +280,7 @@ def get_row_count(dates, dates_type, category, session_key, layout_id, cookie, r
     p = multiprocessing.Process(target=send_request, args=(search_link, cookie,))
     p.daemon = True  # Позволяет процессу завершаться вместе с родителем
     p.start()
-    time.sleep(0.75)
+    time.sleep(3)
     print("____40__")
     c = requests.get(count_link,
                      cookies={'Rsm.Cookie': cookie})
@@ -285,6 +333,60 @@ def split_interval(dates, dates_type, category, cookie, max_rows=1500, registere
 
                 # Запускаем split_interval в отдельном процессе, передавая новый session_key
                 future = executor.submit(split_interval, [part_start, part_end], dates_type,
+                                         category, cookie, max_rows, registered)
+                future_intervals.append(future)
+
+            # Собираем результаты из всех завершённых задач
+            for future in as_completed(future_intervals):
+                result_intervals.extend(future.result())
+
+    return result_intervals
+
+
+def split_interval_vypiski(dates, dates_type, category, cookie, max_rows=1500, registered=None):
+    """
+    makes an intervals of dates for searching only less then 1500 rows of result at one request
+    :param dates:
+    :param dates_type:
+    :param category:
+    :param cookie:
+    :param max_rows:
+    :param registered:
+    :return:
+    """
+    result_intervals = []
+
+    # Получаем session_key для текущего процесса
+    session_key = generate_key()
+
+    # Получаем количество строк для данного интервала
+
+    row_count = get_row_count(dates, dates_type, category, session_key, RSM.COUNTER_LAYOUT, cookie, registered)
+
+    # Если количество строк меньше max_rows, добавляем интервал в результат
+    if row_count <= max_rows:
+        result_intervals.append((dates[0], dates[1], row_count))
+    else:
+        # Определяем количество частей, на которые нужно разделить интервал
+        num_parts = (row_count // max_rows) + 1
+        interval_duration = (dates[1] - dates[0]) / num_parts
+
+        # Используем ProcessPoolExecutor для многопроцессорности
+        with ProcessPoolExecutor(max_workers=50) as executor:
+            future_intervals = []
+
+            # Делим интервал на `num_parts` частей и отправляем каждую часть в параллельный процесс
+            for ii in range(num_parts):
+                part_start = dates[0] + ii * interval_duration
+                part_end = dates[0] + (ii + 1) * interval_duration - timedelta(seconds=1)
+
+                # Округляем границы подинтервала до секунд
+                part_start = part_start.replace(microsecond=0)
+                part_end = part_end.replace(microsecond=0)
+
+
+                # Запускаем split_interval в отдельном процессе, передавая новый session_key
+                future = executor.submit(split_interval_vypiski, [part_start, part_end], dates_type,
                                          category, cookie, max_rows, registered)
                 future_intervals.append(future)
 
@@ -454,6 +556,8 @@ def get_rsm(date_start, date_end, dates_type, category, session_key, cookie, lay
                                              registered=registered)
     elif dates_type == 4:
         search_link, count_link = search_kurs_living_space(dates, layout_id, session_key)
+    elif dates_type == 5:
+        search_link, count_link = search_vypiski(dates, layout_id, session_key)
 
     a = requests.get(search_link,
                      cookies={'Rsm.Cookie': cookie})
@@ -651,7 +755,7 @@ def search_kpu(
 def search_kurs_living_space(apart_id_interval, layout_id: int, session_key: str):
     '''
     small function for making links only for apart_id intervals in KursLivigSpace
-    with Распорядитель_П8=11,12,30,81 and Незаселена
+    with Распорядитель_Имя = Переселение/Реновация and Незаселена
     in the next versions will be refactored in the same way with the search_kpu function... may be))
     layout_id required
     :param apart_id_interval:
@@ -683,12 +787,12 @@ def search_kurs_living_space(apart_id_interval, layout_id: int, session_key: str
         "SearchDataNewDesign": urllib.parse.quote(json.dumps([
             {
                 "typeControl": "value",
-                "type": "BOOLEAN",
-                "text": "Распорядитель_П8=11,12,30,81",
-                "textValue": "Да",
-                "value": 1,
-                "id": 43726400,
-                "allowDelete": True  # Булево значение
+                "text": "Распорядитель_Код",
+                "textValue": "753891",
+                "type": "DECIMAL",
+                "value": "753891",
+                "id": 43704000,
+                "allowDelete": True
             },
             {
                 "typeControl": "value",
@@ -731,11 +835,11 @@ def search_kurs_living_space(apart_id_interval, layout_id: int, session_key: str
         "SearchDataNewDesign": json.dumps([
             {
                 "typeControl": "value",
-                "type": "BOOLEAN",
-                "text": "Распорядитель_П8=11,12,30,81",
-                "textValue": "Да",
-                "value": 1,
-                "id": 43726400,
+                "text": "Распорядитель_Код",
+                "textValue": "753891",
+                "type": "DECIMAL",
+                "value": "753891",
+                "id": 43704000,
                 "allowDelete": "true"
             },
             {
@@ -755,6 +859,104 @@ def search_kurs_living_space(apart_id_interval, layout_id: int, session_key: str
                 "from": f"{apart_id_interval[0]}",
                 "to": f"{apart_id_interval[1]}",
                 "id": 43705100,
+                "allowDelete": "true"
+            }
+        ], ensure_ascii=False, separators=(',', ':')),
+        "databaseFilters": [],
+        "selectedLists": [],
+        "UniqueSessionKey": f"{session_key}",
+        "UniqueSessionKeySetManually": "true",
+        "ContentLoadCounter": 1,
+        "CurrentLayoutId": f"{layout_id}"
+    }
+
+    get_count_params_json = json.dumps(get_count_params, ensure_ascii=False)
+
+    query_string_search = urlencode(params_search, safe=':/')
+    query_string_count = urlencode({"parametersJson": get_count_params_json,
+                                    "registerId": "KursKpu",
+                                    "uniqueSessionKey": session_key})
+
+    full_url_search = urljoin(base_url_search, f"?{query_string_search}")
+    full_url_count = urljoin(base_url_count, f"?{query_string_count}")
+
+    return full_url_search, full_url_count
+
+
+def search_vypiski(creation_dates, layout_id: int, session_key: str):
+    '''
+    small function for making links only for apart_id intervals in KursLivigSpace
+    with Распорядитель_Имя = Переселение/Реновация and Незаселена
+    in the next versions will be refactored in the same way with the search_kpu function... may be))
+
+    base layout_id = 22262
+
+    layout_id required
+    :param layout_id: int
+    :param session_key: str
+    :return:
+    '''
+    date_start, date_end = process_date_wotime_range(creation_dates)
+    base_url_search = "http://webrsm.mlc.gov:5222/Registers/GetData"
+    base_url_count = "http://webrsm.mlc.gov:5222/Registers/GetCount"
+
+    # params for GetData query
+    params_search = {
+        "sort": "",
+        "page": 1,
+        "pageSize": 30,
+        "group": "",
+        "filter": "",
+        "RegisterId": "KursOrder",
+        "SearchApplied": "true",
+        "PageChanged": "false",
+        "SelectAll": "false",
+        "ClearSelection": "true",
+        "LayoutId": f"{layout_id}",
+        "RegisterViewId": "KursOrder",
+        "LayoutRegisterId": "0",
+        "FilterRegisterId": "0",
+        "ListRegisterId": "0",
+        "SearchDataNewDesign": urllib.parse.quote(json.dumps([
+            {
+                "typeControl": "range",  # Диапазонное значение (от и до)
+                "text": "Дата создания проекта выписки",  # Название фильтра
+                "textValue": f"c {date_start} 00:00:00 до {date_end} 23:59:59",  # Условие фильтрации
+                "type": "DATE",  # Тип данных – дата
+                "from": f"{date_start} 00:00:00",  # Начальная дата диапазона
+                "to": f"{date_end} 23:59:59",  # Конечная дата диапазона
+                "id": 43821000,  # Идентификатор атрибута
+                "allowDelete": True  # Возможность удаления данного фильтра
+            }
+        ], ensure_ascii=False, separators=(',', ':')), safe=''),
+        "UniqueSessionKey": f"{session_key}",
+        "UniqueSessionKeySetManually": "true",
+        "ContentLoadCounter": "1"
+    }
+
+    # params for GetCount query
+    get_count_params = {
+        "RegisterId": "KursOrder",
+        "SearchApplied": "true",
+        "PageChanged": "false",
+        "Page": 1,
+        "PageSize": 30,
+        "SelectAll": "false",
+        "ClearSelection": "false",
+        "LayoutId": f"{layout_id}",
+        "RegisterViewId": "KursOrder",
+        "LayoutRegisterId": "0",
+        "FilterRegisterId": "0",
+        "ListRegisterId": "0",
+        "SearchDataNewDesign": json.dumps([
+            {
+                "typeControl": "range",  # Диапазонное значение (от и до)
+                "text": "Дата создания проекта выписки",  # Название фильтра
+                "textValue": f"c {date_start} 00:00:00 до {date_end} 23:59:59",  # Условие фильтрации
+                "type": "DATE",  # Тип данных – дата
+                "from": f"{date_start} 00:00:00",  # Начальная дата диапазона
+                "to": f"{date_end} 23:59:59",  # Конечная дата диапазона
+                "id": 43821000,  # Идентификатор атрибута
                 "allowDelete": "true"
             }
         ], ensure_ascii=False, separators=(',', ':')),
@@ -823,24 +1025,41 @@ def get_kurs_living_space(ids, layout_id):
     return df
 
 
+def get_vypiski(dates, layout_id):
+    """
+    gets dataframe from RSM with apartment resource by interval of APART_ID
+    :param ids:
+    :param layout_id:
+    :return:
+    """
+
+    token = check_token()
+    result = split_interval_vypiski(dates, 5, 0, token)
+    intervals = merge_intervals(result, 5, token, 0, layout_id)
+    df = new_kpu(intervals)
+
+    return df
+
+
 if __name__ == '__main__':
     start = datetime.now()
     # token = check_token()
     # result = split_interval_ids([999, 99999999], 4, token)
     # print(merge_intervals_ids(result, 4, token, 21744))
 
-    df = get_kurs_living_space([999, 99999999], 21744)
-    df.to_excel("/Users/viktor/Downloads/resurs_test.xlsx")
-    print(datetime.now() - start)
+    # df = get_kurs_living_space([999, 99999999], 21744)
+    # df.to_excel("/Users/macbook/Downloads/resurs_test.xlsx")
+    # print(datetime.now() - start)
 
     # print(split_interval_ids([999, 99999999], 4, check_token()))
     # print(search_kurs_living_space([999, 99999999], 21744, generate_key()))
     # print(check_token())
-    # category = [70]
-    # layout_id = 22024 # usually use 21705
-    # start_date = datetime(2017, 1, 1, 0, 0, 0)
-    # end_date = datetime(2024, 12, 31, 23, 59, 59)
-    #
+    # category = [70, 91]
+    # layout_id = 22223 # usually use 21705
+    start_date = datetime(2017, 1, 1, 0, 0, 0)
+    end_date = datetime(2025, 3, 11, 23, 59, 59)
     # df = get_kpu(start_date, end_date, 1, category, layout_id)
-    # df.to_excel('/Users/viktor/Downloads/export_districts.xlsx')
     # search_kpu(generate_key(), 21703, registered=True, kpu_direction=[1], decl_date=['01.01.2020', '31.12.2020'])
+
+    df = get_vypiski([start_date, end_date], 22262)
+    # df.to_excel('vypiski_test.xlsx')
