@@ -952,6 +952,169 @@ def start_kpu_xlsx(
     return full_url, query_string_count
 
 
+def start_orders_xlsx(
+        session_key,
+        layout_id,
+        kpu_num=None,
+        # list of directions
+        kpu_direction=None,
+        registered=None,
+        affair_grlgot=None,
+        # list, if interval - [start_year, end_year], if value [year] Год постановки на учет
+        stand_year=None,
+        # list, if interval - [start_date, end_date], if value [date] Дата заявления о постановке на учет
+        decl_date=None,
+        # list, if interval - [start_date, end_date], if value [date] Дата операции снятия с учета
+        reason2_calc=None,
+        # list, if interval - [start_date, end_date], if value [date] Дата распоряжения о снятии с учета
+        reason2_date_resolution=None
+                ):
+    """
+    makes a search and search_count links for the RSM requests
+    :param session_key:
+    :param layout_id:
+    :param kpu_num:
+    :param kpu_direction:
+    :param registered:
+    :param affair_grlgot:
+    :param stand_year:
+    :param decl_date:
+    :param reason2_calc:
+    :param reason2_date_resolution:
+    :return:
+    """
+
+    search_data = []
+    search_dynamic_control_data = []
+
+    try:
+
+        if kpu_direction:
+            s_data = {
+                "key": "KpuDirection",
+                "value": f"{str(kpu_direction)}"
+            }
+            search_data.append(s_data)
+
+        if registered is not None:
+            if registered is True:
+                s_data = {
+                    "key": "InList",
+                    "value": "true"
+                }
+                search_data.append(s_data)
+
+            elif registered is False:
+                s_data = {
+                    "key": "Free",
+                    "value": "true"
+                }
+                search_data.append(s_data)
+
+        if decl_date is not None:
+
+            if len(decl_date) == 2:
+                start_date, end_date = process_date_range(decl_date)
+
+                if 'ERROR' in start_date:
+                    raise ValueError('Date formatting error')
+
+                dyn_con_data = {
+                    "IdControl": "CREATION_DATE",  # Идентификатор фильтра по дате
+                    "ControlType": "DynamicDate",  # Тип фильтра (динамическая дата)
+                    "IdAttribute": "43821000",  # Идентификатор атрибута
+                    "From": start_date,  # Начальная дата интервала
+                    "To": end_date  # Конечная дата интервала
+                }
+                # print(dyn_con_data)
+                search_dynamic_control_data.append(dyn_con_data)
+
+    except ValueError as e:
+        print(e)
+        return f'ERROR {e}'
+
+    formatted_search_data = {}
+    for index, item in enumerate(search_data):
+        formatted_search_data[f"searchData[{index}].key"] = item["key"]
+        formatted_search_data[f"searchData[{index}].value"] = str(item["value"]).lower()
+
+    get_count_params = {
+            "RegisterId": "KursOrder",  # Идентификатор реестра
+            "SearchApplied": "false",  # Поиск активен (true)
+            "PageChanged": "false",  # Страница не менялась
+            "Page": 1,  # Номер страницы
+            "PageSize": 30,  # Размер страницы
+            "SelectAll": "false",  # Все записи не выбраны
+            "ClearSelection": "false",
+            "LayoutId": layout_id,  # Сброс выбора не применён
+            "RegisterViewId": "KursOrder",  # Идентификатор представления реестра
+            "LayoutRegisterId": "0",  # Идентификатор макета реестра (0 - по умолчанию)
+            "FilterRegisterId": "0",  # Идентификатор фильтра реестра (0 - не задан)
+            "ListRegisterId": "0",  # Идентификатор списка реестра (0 - не задан)
+            "searchData": [],
+            "SearchDynamicControlData": json.dumps(search_dynamic_control_data),
+            "databaseFilters": [],  # База фильтров (пусто)
+            "selectedLists": [],  # Списки, выбранные пользователем (пусто)
+            "UniqueSessionKey": session_key,  # Уникальный ключ сессии
+            "UniqueSessionKeySetManually": "true",  # Уникальный ключ установлен вручную
+            "ContentLoadCounter": 0,  # Счётчик загрузки контента
+            "CurrentLayoutId": layout_id  # Текущий макет (ID макета)
+        }
+
+    get_data_params_1 = {
+            "sort": "['1000882']-desc",
+            "page": "1",
+            "pageSize": "10",
+            "group": "",
+            "filter": "",
+            "RegisterId": "CoreRegisterLayoutExport",
+            "SearchApplied": "false",
+            "PageChanged": "false",
+            "Page": "1",
+            "PageSize": "10",
+            "SelectAll": "false",
+            "ClearSelection": "false",
+            "RegisterViewId": "CoreRegisterLayoutExport",
+            "LayoutRegisterId": "0",
+            "FilterRegisterId": "0",
+            "ListRegisterId": "0",
+            "searchData[0].key": "IsMine",
+            "searchData[0].value": "true",
+            "SearchDynamicControlData": "[]",
+            "UniqueSessionKey": session_key,
+            "UniqueSessionKeySetManually": "true",
+            "ExportLayoutId": layout_id,
+            "ExportRegisterViewId": "KursOrder",
+            "NotSetTitle": "true",
+            "ContentLoadCounter": "17"
+        }
+
+    get_data_params_2 = {
+        "SearchDynamicControlData": search_dynamic_control_data,
+        "UniqueSessionKey": session_key,  # Уникальный ключ сессии
+        "UniqueSessionKeySetManually": "true",  # Уникальный ключ установлен вручную
+        "ContentLoadCounter": "1"  # Счётчик загрузки контента
+    }
+
+    # get_data_params_1.update(formatted_search_data)
+    # get_data_params_1.update(get_data_params_2)
+
+    url_data = "http://webrsm.mlc.gov:5222/Registers/GetData"
+    url_count = "http://webrsm.mlc.gov:5222/Registers/ExportBackground"
+    query_string = urlencode(get_data_params_1)
+
+    get_count_params_json = json.dumps(get_count_params)
+    get_count_params_json = urllib.parse.quote(get_count_params_json)
+
+    query_string_count = {"parametersJson": get_count_params_json,
+                                    "coreExportType": "Xlsx"}
+    # Сборка полного URL
+    full_url = urljoin(url_data, f"?{query_string}")
+    full_url_count = urljoin(url_count, f"?{query_string_count}")
+
+    return full_url, query_string_count
+
+
 def start_resurs_xlsx(
         session_key,
         layout_id,
@@ -1559,6 +1722,78 @@ def get_resurs_xlsx_df(layout_id):
     return df
 
 
+def get_orders_xlsx_df(start_date, end_date, layout_id):
+    start = datetime.now()
+
+    key = generate_key()
+    token = get_cookie()
+    url1, url2 = start_kpu_xlsx(key, layout_id, decl_date=[start_date, end_date])
+
+    print(url2)
+
+    headers = {
+    "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = url2
+    cookie = {'Rsm.Cookie': token}
+    url_xlsx_start = "http://webrsm.mlc.gov:5222/Registers/ExportBackground"
+
+    print(requests.post(url_xlsx_start, data=data, headers=headers, cookies=cookie, stream=True))
+
+    status_value = ''
+
+    while status_value != "Завершена":
+        
+        respose = requests.get(url1, cookies=cookie)
+
+        try:
+            print(respose.status_code)
+        except Exception as e:
+            print(e)
+
+        try:
+            # print(respose.text)
+            data = json.loads(respose.text)
+            # Получаем первую запись
+            first_record = data["Data"][0]
+
+            # Извлекаем ID и значение поля "1000881"
+            record_id = first_record["ID"]
+            print(record_id)
+            status_value = first_record["1000881"]
+
+            print("-------------------")
+        except Exception as e:
+            print(e)
+
+        time.sleep(10)
+
+    url = f'http://webrsm.mlc.gov:5222/CoreRegisterLayout/ExportDownload?exportId={record_id}&UniqueSessionKey={key}'
+    response = send_request(url, cookie=token)
+
+
+    # Проверяем успех
+    if response.status_code == 200:
+        # Получаем имя файла (опционально)
+        content_disposition = response.headers.get("content-disposition", "")
+        match = re.search(r'filename=([^;]+)', content_disposition)
+        filename = match.group(1).strip('"') if match else "download.xlsx"
+        
+        # Читаем в память, без записи на диск
+        file_bytes = io.BytesIO(response.content)
+
+        # Загружаем в DataFrame
+        df = pd.read_excel(file_bytes)
+
+        print(f"✅ Загружен файл: {filename}")
+        print(df.head())  # показываем первые строки
+        # df.to_excel('kpu.xlsx')
+    else:
+        print(f"❌ Ошибка запроса: {response.status_code}")
+
+    return df
+
+
 if __name__ == '__main__':
     start = datetime.now()
     # token = check_token()
@@ -1587,8 +1822,8 @@ if __name__ == '__main__':
 
     start_date = datetime(2017, 1, 1, 0, 0, 0)
     end_date = datetime(2025, 3, 26, 23, 59, 59)
-    df = get_resurs_xlsx_df(21744)
-    df.to_excel('resurs_func.xlsx')
+    df = get_orders_xlsx_df(start_date, end_date, 22262)
+    df.to_excel('orders_func.xlsx')
 
 
 
